@@ -1,0 +1,363 @@
+# coding: utf-8
+
+import pandas as pd
+from flask import Flask, request, render_template
+import pickle
+
+app = Flask("__name__")
+
+# Load the data to align column structure and train data
+df_1 = pd.read_csv("first_telc.csv")
+
+# Load the pre-trained models
+model_dt = pickle.load(open("model_dt.sav", "rb"))
+model_rf = pickle.load(open("model_rf.sav", "rb"))
+
+@app.route("/")
+def loadPage():
+    return render_template('home.html', query="", output1=None, output2=None)
+
+@app.route("/", methods=['POST'])
+def predict():
+    # Collect input data from the form
+    input_data = [
+        request.form['query1'],  # SeniorCitizen
+        request.form['query2'],  # MonthlyCharges
+        request.form['query3'],  # TotalCharges
+        request.form['query4'],  # gender
+        request.form['query5'],  # Partner
+        request.form['query6'],  # Dependents
+        request.form['query7'],  # PhoneService
+        request.form['query8'],  # MultipleLines
+        request.form['query9'],  # InternetService
+        request.form['query10'], # OnlineSecurity
+        request.form['query11'], # OnlineBackup
+        request.form['query12'], # DeviceProtection
+        request.form['query13'], # TechSupport
+        request.form['query14'], # StreamingTV
+        request.form['query15'], # StreamingMovies
+        request.form['query16'], # Contract
+        request.form['query17'], # PaperlessBilling
+        request.form['query18'], # PaymentMethod
+        request.form['query19']  # tenure
+    ]
+
+    # Create a DataFrame for the input data
+    data_columns = [
+        'SeniorCitizen', 'MonthlyCharges', 'TotalCharges', 'gender', 
+        'Partner', 'Dependents', 'PhoneService', 'MultipleLines', 'InternetService',
+        'OnlineSecurity', 'OnlineBackup', 'DeviceProtection', 'TechSupport',
+        'StreamingTV', 'StreamingMovies', 'Contract', 'PaperlessBilling',
+        'PaymentMethod', 'tenure'
+    ]
+    new_df = pd.DataFrame([input_data], columns=data_columns)
+
+    # Concatenate with df_1 to maintain structure for dummy variables
+    df_2 = pd.concat([df_1, new_df], ignore_index=True)
+
+    # Add tenure_group column
+    labels = ["{0} - {1}".format(i, i + 11) for i in range(1, 72, 12)]
+    df_2['tenure_group'] = pd.cut(df_2.tenure.astype(int), range(1, 80, 12), right=False, labels=labels)
+
+    # Drop unnecessary columns
+    df_2.drop(columns=['tenure'], axis=1, inplace=True)
+
+    # One-hot encode the categorical variables
+    new_df_dummies = pd.get_dummies(df_2[['gender', 'SeniorCitizen', 'Partner', 'Dependents', 'PhoneService',
+                                           'MultipleLines', 'InternetService', 'OnlineSecurity', 'OnlineBackup',
+                                           'DeviceProtection', 'TechSupport', 'StreamingTV', 'StreamingMovies',
+                                           'Contract', 'PaperlessBilling', 'PaymentMethod', 'tenure_group']])
+
+    # Check for duplicate columns and handle them
+    print("Checking for duplicate columns...")
+
+    if new_df_dummies.columns.duplicated().any():
+        print("Duplicate columns found in new_df_dummies. Removing duplicates.")
+        new_df_dummies = new_df_dummies.loc[:, ~new_df_dummies.columns.duplicated()]
+
+    expected_columns = model_dt.feature_names_in_  # Assuming both models use the same columns
+
+    if len(expected_columns) != len(set(expected_columns)):
+        print("Duplicate columns found in expected_columns. Removing duplicates.")
+        expected_columns = list(dict.fromkeys(expected_columns))
+
+    # Align with model input structure
+    new_df_dummies = new_df_dummies.reindex(columns=expected_columns, fill_value=0)
+
+    # Make predictions using both models
+    dt_prediction = model_dt.predict(new_df_dummies.tail(1))
+    dt_prob = model_dt.predict_proba(new_df_dummies.tail(1))[:, 1]
+    
+    rf_prediction = model_rf.predict(new_df_dummies.tail(1))
+    rf_prob = model_rf.predict_proba(new_df_dummies.tail(1))[:, 1]
+
+    # Interpret the Decision Tree model's result
+    if dt_prediction == 1:
+        dt_output = "Decision Tree: This customer is likely to churn."
+    else:
+        dt_output = "Decision Tree: This customer is likely to continue."
+
+    dt_confidence = "Confidence: {:.2f}%".format(dt_prob[0] * 100)
+
+    # Interpret the Random Forest model's result
+    if rf_prediction == 1:
+        rf_output = "Random Forest: This customer is likely to churn."
+    else:
+        rf_output = "Random Forest: This customer is likely to continue."
+
+    rf_confidence = "Confidence: {:.2f}%".format(rf_prob[0] * 100)
+
+    # Render the results on the template
+    return render_template(
+        'home.html',
+        output1=dt_output, confidence1=dt_confidence,
+        output2=rf_output, confidence2=rf_confidence,
+        query1=request.form['query1'],
+        query2=request.form['query2'],
+        query3=request.form['query3'],
+        query4=request.form['query4'],
+        query5=request.form['query5'],
+        query6=request.form['query6'],
+        query7=request.form['query7'],
+        query8=request.form['query8'],
+        query9=request.form['query9'],
+        query10=request.form['query10'],
+        query11=request.form['query11'],
+        query12=request.form['query12'],
+        query13=request.form['query13'],
+        query14=request.form['query14'],
+        query15=request.form['query15'],
+        query16=request.form['query16'],
+        query17=request.form['query17'],
+        query18=request.form['query18'],
+        query19=request.form['query19']
+    )
+
+# Run the application
+if __name__ == "__main__":
+    app.run(debug=True)
+
+
+
+******************************************************************************
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Churn Prediction</title>
+	<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+</head>
+
+<body>
+	<div class="container">
+		<h1 class="text-center mt-4">Churn Prediction</h1>
+		<div class="form-container">
+			<form action="/" method="POST">
+				<div class="form-group">
+					<label for="query1">SeniorCitizen:</label>
+					<select class="form-control" id="query1" name="query1" required>
+						<option value="" disabled selected>Select Senior Citizen</option>
+						<option value="0" {% if query1=='0' %}selected{% endif %}>No</option>
+						<option value="1" {% if query1=='1' %}selected{% endif %}>Yes</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query2">MonthlyCharges:</label>
+					<input type="number" class="form-control" id="query2" name="query2" step="0.01"
+						placeholder="Enter Monthly Charges" value="{{ query2 }}" required>
+				</div>
+
+				<div class="form-group">
+					<label for="query3">TotalCharges:</label>
+					<input type="number" class="form-control" id="query3" name="query3" step="0.01"
+						placeholder="Enter Total Charges" value="{{ query3 }}" required>
+				</div>
+
+				<div class="form-group">
+					<label for="query4">Gender:</label>
+					<select class="form-control" id="query4" name="query4" required>
+						<option value="" disabled selected>Select Gender</option>
+						<option value="Male" {% if query4=='Male' %}selected{% endif %}>Male</option>
+						<option value="Female" {% if query4=='Female' %}selected{% endif %}>Female</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query5">Partner:</label>
+					<select class="form-control" id="query5" name="query5" required>
+						<option value="" disabled selected>Select Partner Status</option>
+						<option value="Yes" {% if query5=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query5=='No' %}selected{% endif %}>No</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query6">Dependents:</label>
+					<select class="form-control" id="query6" name="query6" required>
+						<option value="" disabled selected>Select Dependents Status</option>
+						<option value="Yes" {% if query6=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query6=='No' %}selected{% endif %}>No</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query7">PhoneService:</label>
+					<select class="form-control" id="query7" name="query7" required>
+						<option value="" disabled selected>Select Phone Service Status</option>
+						<option value="Yes" {% if query7=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query7=='No' %}selected{% endif %}>No</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query8">MultipleLines:</label>
+					<select class="form-control" id="query8" name="query8" required>
+						<option value="" disabled selected>Select Multiple Lines Status</option>
+						<option value="Yes" {% if query8=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query8=='No' %}selected{% endif %}>No</option>
+						<option value="No phone service" {% if query8=='No phone service' %}selected{% endif %}>No phone
+							service</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query9">InternetService:</label>
+					<select class="form-control" id="query9" name="query9" required>
+						<option value="" disabled selected>Select Internet Service</option>
+						<option value="DSL" {% if query9=='DSL' %}selected{% endif %}>DSL</option>
+						<option value="Fiber optic" {% if query9=='Fiber optic' %}selected{% endif %}>Fiber optic
+						</option>
+						<option value="No" {% if query9=='No' %}selected{% endif %}>No</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query10">OnlineSecurity:</label>
+					<select class="form-control" id="query10" name="query10" required>
+						<option value="" disabled selected>Select Online Security Status</option>
+						<option value="Yes" {% if query10=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query10=='No' %}selected{% endif %}>No</option>
+						<option value="No internet service" {% if query10=='No internet service' %}selected{% endif %}>
+							No internet service</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query11">OnlineBackup:</label>
+					<select class="form-control" id="query11" name="query11" required>
+						<option value="" disabled selected>Select Online Backup Status</option>
+						<option value="Yes" {% if query11=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query11=='No' %}selected{% endif %}>No</option>
+						<option value="No internet service" {% if query11=='No internet service' %}selected{% endif %}>
+							No internet service</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query12">DeviceProtection:</label>
+					<select class="form-control" id="query12" name="query12" required>
+						<option value="" disabled selected>Select Device Protection Status</option>
+						<option value="Yes" {% if query12=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query12=='No' %}selected{% endif %}>No</option>
+						<option value="No internet service" {% if query12=='No internet service' %}selected{% endif %}>
+							No internet service</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query13">TechSupport:</label>
+					<select class="form-control" id="query13" name="query13" required>
+						<option value="" disabled selected>Select Tech Support Status</option>
+						<option value="Yes" {% if query13=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query13=='No' %}selected{% endif %}>No</option>
+						<option value="No internet service" {% if query13=='No internet service' %}selected{% endif %}>
+							No internet service</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query14">StreamingTV:</label>
+					<select class="form-control" id="query14" name="query14" required>
+						<option value="" disabled selected>Select Streaming TV Status</option>
+						<option value="Yes" {% if query14=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query14=='No' %}selected{% endif %}>No</option>
+						<option value="No internet service" {% if query14=='No internet service' %}selected{% endif %}>
+							No internet service</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query15">StreamingMovies:</label>
+					<select class="form-control" id="query15" name="query15" required>
+						<option value="" disabled selected>Select Streaming Movies Status</option>
+						<option value="Yes" {% if query15=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query15=='No' %}selected{% endif %}>No</option>
+						<option value="No internet service" {% if query15=='No internet service' %}selected{% endif %}>
+							No internet service</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query16">Contract:</label>
+					<select class="form-control" id="query16" name="query16" required>
+						<option value="" disabled selected>Select Contract Type</option>
+						<option value="Month-to-month" {% if query16=='Month-to-month' %}selected{% endif %}>
+							Month-to-month</option>
+						<option value="One year" {% if query16=='One year' %}selected{% endif %}>One year</option>
+						<option value="Two year" {% if query16=='Two year' %}selected{% endif %}>Two year</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query17">PaperlessBilling:</label>
+					<select class="form-control" id="query17" name="query17" required>
+						<option value="" disabled selected>Select Paperless Billing Status</option>
+						<option value="Yes" {% if query17=='Yes' %}selected{% endif %}>Yes</option>
+						<option value="No" {% if query17=='No' %}selected{% endif %}>No</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query18">PaymentMethod:</label>
+					<select class="form-control" id="query18" name="query18" required>
+						<option value="" disabled selected>Select Payment Method</option>
+						<option value="Electronic check" {% if query18=='Electronic check' %}selected{% endif %}>
+							Electronic check</option>
+						<option value="Mailed check" {% if query18=='Mailed check' %}selected{% endif %}>Mailed check
+						</option>
+						<option value="Bank transfer (automatic)" {% if query18=='Bank transfer (automatic)'
+							%}selected{% endif %}>Bank transfer (automatic)</option>
+						<option value="Credit card (automatic)" {% if query18=='Credit card (automatic)' %}selected{%
+							endif %}>Credit card (automatic)</option>
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label for="query19">Tenure:</label>
+					<input type="number" class="form-control" id="query19" name="query19"
+						placeholder="Enter tenure in months" value="{{ query19 }}" required>
+				</div>
+
+				<button type="submit" class="btn btn-primary w-100">SUBMIT</button>
+			</form>
+
+			{% if output1 or output2 %}
+			<div class="result-textarea mt-4">
+				<h5>Prediction Results</h5>
+				<textarea class="form-control result-textarea" rows="2"
+					readonly>{{ output1 }} - {{ confidence1 }}</textarea>
+				<textarea class="form-control result-textarea mt-2" rows="2"
+					readonly>{{ output2 }} - {{ confidence2 }}</textarea>
+			</div>
+			{% endif %}
+		</div>
+	</div>
+</body>
+
+</html>
